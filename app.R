@@ -12,17 +12,19 @@ library(crosstalk)
 
 # APP SETTINGS ---------------------------------------------------------------- 
 
-source("settings.R") # Please modify the settings file for changes to settings
-
+if(!file.exists("settings.R")){
+              source("settings-default.R")} else {
+              source("settings.R")} # To customise settings, please create settings.R# LOAD GRAPHQL ----------------------------------------------------------------
+              
 # LOAD GRAPHQL ----------------------------------------------------------------
 
+source("graphql_functions/getPatientReport.R")
 source("graphql_functions/getAssessments.R")
 
 # LOAD UTILITY ----------------------------------------------------------------
 
-
+source("utility_functions/simplifyPatRep.R")
 source("utility_functions/inactivity.R")
-
 
 inactivity = inactivity(timeoutSeconds)
 
