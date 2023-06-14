@@ -13,18 +13,18 @@ library(crosstalk)
 # APP SETTINGS ---------------------------------------------------------------- 
 
 if(!file.exists("settings.R")){
-              source("settings-default.R")} else {
-              source("settings.R")} # To customise settings, please create settings.R# LOAD GRAPHQL ----------------------------------------------------------------
-              
+  source("settings-default.R")} else {
+    source("settings.R")} # To customise settings, please create settings.R
+
 # LOAD GRAPHQL ----------------------------------------------------------------
 
-source("graphql_functions/getPatientReport.R")
 source("graphql_functions/getAssessments.R")
 
 # LOAD UTILITY ----------------------------------------------------------------
 
-source("utility_functions/simplifyPatRep.R")
+
 source("utility_functions/inactivity.R")
+
 
 inactivity = inactivity(timeoutSeconds)
 
@@ -36,7 +36,7 @@ ui <- dashboardPage(skin = "purple",
                     
                     # HEADER ------------------------------------------------------------------ 
                     dashboardHeader(
-                      title = tags$a(href = 'http://mhira-project.org',
+                      title = tags$a(href = 'http://mhira.app',
                                      tags$img(src = 'mhira_logo.png', height = '50', width = '150'),
                                      'MHIRA')
                     ),
@@ -44,7 +44,7 @@ ui <- dashboardPage(skin = "purple",
                     # SIDEBAR ------------------------------------------------------------------
                     dashboardSidebar(
                       width = 250,
-                      collapsed = TRUE,
+                      collapsed = FALSE,
                       tags$script(inactivity), # For timeout
                       
                       tags$script(HTML( # This javascript code gets data from localStorage of the browser
@@ -55,7 +55,9 @@ ui <- dashboardPage(skin = "purple",
             Shiny.setInputValue('currentLang', CL);
             });"
                       )),
-            h1("Progress report")
+            
+            uiOutput("dateRangeSelector")
+
             
                     ),
             
@@ -64,14 +66,9 @@ ui <- dashboardPage(skin = "purple",
               
               #  includeCSS("www/myCSS.css"),
               fluidRow(
-                h1("Instruments used over time"),
-                plotOutput("progress_plot"),
-                br(),
-                h1("Usage of questionnaires"),
-                plotOutput("instrument_plot"),
-                br(),
-                h1("Indicators"),
-                DTOutput("table", width = "30%")
+                h1("Assessments by user"),
+                DTOutput("outputTable", width = "60%")
+
                 
                 
                 
@@ -80,7 +77,7 @@ ui <- dashboardPage(skin = "purple",
               
             )
             
-            # CLOSE USER INTERFACE UI ---------------------------------------------------
+# CLOSE USER INTERFACE UI ---------------------------------------------------
             
 )
 
@@ -122,6 +119,13 @@ server = function(input, output, session) {
     print("get patient report via graphql")
     
     assessments = getAssessments(token = session$userData, url = url)
+      
+    if(is_empty(assessments)){
+      showNotification(
+        "No data obtained from MHIRA",
+        type = "error",
+        duration = 20)
+      session$close()}
     
     assessments(assessments)
     
@@ -132,71 +136,93 @@ server = function(input, output, session) {
   
   # MAKE PLOTS
   
+  df = reactiveVal() # the imported data as dataframe
+  
   observe({
     req(!is_empty(assessments()))
-    print("rendering plots")
+    print("reformatting data and creating date range widget")
     
     assessments = assessments()
-    cols = c("#4DAF4A", "#E41A1C", "#377EB8", "#FF7F00", "#984EA3")
     
-    df = assessments %>% 
+    df = assessments %>%
+      unnest(cols = clinician) %>%
       mutate(
+        clinician = paste(firstName, lastName, sep = " "),
         createdAt = lubridate::as_datetime(createdAt),
         updatedAt = lubridate::as_datetime(updatedAt),
+        submissionDate = lubridate::as_datetime(submissionDate),
         dateTime = createdAt,
-        status = factor(status, levels = c("COMPLETED", "CANCELLED", "OPEN_FOR_COMPLETION","PARTIALLY_COMPLETED", "EXPIRED")))  %>%
+        status = factor(status, levels = c("COMPLETED", "PARTIALLY_COMPLETED", "PLANNED","CANCELLED", "OPEN_FOR_COMPLETION", "PENDING", "EXPIRED" )))  %>%
       arrange(dateTime) %>%
       mutate(questInAssessment = map(assessments$questionnaires, nrow) %>% unlist) %>%
       group_by(status) %>% 
       mutate(questCount = cumsum(questInAssessment)) %>%
-      ungroup
+      ungroup()
+
+    df(df)
     
-    progress = ggplot(df, aes(x = dateTime, y = questCount, group = status, linetype = status, colour = status)) + 
-      geom_line(lwd = 1.3) + 
-      geom_point(size = 2) + 
-      ylab("cummulative number of questionnaires") + 
-      scale_colour_manual(values = cols) +
-      scale_fill_manual(values = cols) +
-      theme_light() 
+    output$dateRangeSelector <- renderUI({
+      date_min <- min(df$createdAt)
+      date_max <- max(df$createdAt)
+      
+      dateRangeInput("dateRange", "Custom Range:",
+                     start = Sys.Date() - 30,
+                     end = Sys.Date(),
+                     min = date_min,
+                     max = Sys.Date(),
+                     format = "yyyy-mm-dd",
+                     separator = " - ")
+                    
+      
+       })
     
-    questCount = df %>% 
-      unnest(questionnaires) %>% 
-      group_by(status) %>%
-      count(abbreviation) %>%
-      ungroup %>% 
-      arrange(desc(status), abbreviation,  n) %>%
-      group_by(abbreviation) %>%
-      mutate(pos = cumsum(n) - 0.5 * n) 
+  })
     
-    instrument = ggplot(questCount, aes(x = abbreviation, y = n, colour = status, fill = status)) +
-      geom_bar(stat = "identity", alpha = 0.3) + 
-      geom_text(aes(y = pos, label = n, group = status)) +
-      scale_colour_manual(values = cols) +
-      scale_fill_manual(values = cols) +
-      ylab("count") + 
-      xlab("instrument") +
-      theme_light() +
-      theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) 
+   
+
+   
+  observe({
+
+    req(!is_empty(df()))
+    print("reformatting data and creating date range widget")
+
+    df = df()
     
-    table = df %>%summarise(
-      patients_with_assessments = length(patientId %>% unique()),
-      completed_assessments = length(status[ status == "COMPLETED"]),
-      open_assessments = length(status[ status == "OPEN_FOR_COMPLETION"]),
-      partial_assessments = length(status[ status == "PARTIALLY_COMPLETED"]),
-      expired_assessments = length(status[ status == "EXPIRED"]),
-      planned_assessments = length(status[ status == "PLANNED"]),
-      cancelled_assessments = length(status[ status == "CANCELLED"])) %>%
-      pivot_longer(cols = everything(), names_to = "Object", values_to = "Count") 
+    df_filtered <- df %>%
+      filter(createdAt > input$dateRange[1] & createdAt < input$dateRange[2]) %>%
+      group_by(clinician, status) %>%
+      summarise(count = n()) %>%
+      pivot_wider(names_from = status, values_from = count, values_fill = 0) %>%
+      arrange(desc(COMPLETED)) %>%
+      ungroup()
     
-    
-    
-    output$progress_plot = progress %>% renderPlot()
-    output$instrument_plot = instrument %>% renderPlot()
-    output$table = table %>% renderDT()
+        
+    output$outputTable <- renderDT({
+      df_filtered %>%
+        DT::datatable(
+          
+          caption = paste("Period from ", input$dateRange[1], " to ", input$dateRange[2]),
+          
+          extensions = 'Buttons',
+          
+          options = list(
+            paging = TRUE,
+            searching = TRUE,
+            fixedColumns = FALSE,
+            autoWidth = TRUE,
+            ordering = TRUE,
+            dom = 'tB',
+            buttons = c('copy', 'csv', 'excel')
+          ),
+          filter = "bottom",
+          class = "display"
+        )
+        
+         }) 
     
     print("plots and tables rendered") 
     
-  }) 
+  }) %>% bindEvent(input$dateRange)
   
   
 }

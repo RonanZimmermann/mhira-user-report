@@ -13,6 +13,11 @@ GQL = 'query {
         node {
           id
           patientId
+          clinician{
+            firstName
+            lastName
+          }
+          submissionDate
           createdAt
           updatedAt
           deletedAt
